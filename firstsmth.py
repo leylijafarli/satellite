@@ -14,7 +14,7 @@ SHADOW_START = 0.63
 STEP_SECONDS = 60 
 
 
-class Satelite:
+class Satellite:
     def __init__(self, name, start_time):
         self.name = name
         self.clock = start_time 
