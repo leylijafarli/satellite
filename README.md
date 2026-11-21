@@ -1,5 +1,7 @@
 # Satellite Telemetry Security Simulation
 
+[![Tests](https://github.com/leylijafarli/satellite/actions/workflows/tests.yml/badge.svg)](https://github.com/leylijafarli/satellite/actions/workflows/tests.yml)
+
 A small, dependency-free Python project that simulates a low Earth orbit satellite sending telemetry to a ground station over an unreliable radio link. It demonstrates packet authentication, replay protection, retransmission after packet or acknowledgement loss, and basic link and delivery metrics.
 
 > **Educational simulation:** the orbit, sunlight, power, temperature, and radio-link models are intentionally simplified. This project is not flight software and should not be used to design or operate a real spacecraft or communications system.
@@ -13,6 +15,23 @@ A small, dependency-free Python project that simulates a low Earth orbit satelli
 - HMAC-SHA-256 seals detect packet changes and packets created without the shared key.
 - A bounded replay window rejects duplicates and stale packets while allowing packets to arrive out of order within the window.
 - A separate attack demo exercises normal traffic, tampering, forgery, replay, and out-of-order delivery.
+
+## How a packet is checked
+
+```mermaid
+flowchart LR
+    S[Satellite] -->|Telemetry packet + HMAC-SHA-256 seal| L[Unreliable radio link]
+    L -->|Delivered packet| G[Ground station]
+    L -.->|May drop packet or acknowledgement| S
+    G --> V{Seal valid?}
+    V -->|No| R[Reject altered or forged packet]
+    V -->|Yes| W{Replay-window check}
+    W -->|Duplicate or stale| R
+    W -->|New packet| A[Accept once and acknowledge]
+    A -.->|Acknowledgement may be lost; retry is safe| S
+```
+
+The diagram shows the simulation's integrity and replay checks. The HMAC seal does not encrypt the telemetry.
 
 **Integrity is not encryption.** HMAC authenticates a packet and detects changes; the JSON telemetry remains readable. The simulation also gives the satellite and ground station the same shared key, which is a teaching convenience rather than a complete key-management design.
 
@@ -46,7 +65,39 @@ Run the security scenarios:
 python3 attack_demo.py
 ```
 
-The demo prints PASS/FAIL for each scenario and exits with status `0` if all expected outcomes occur, or `1` if any scenario fails.
+The demo prints PASS/FAIL for each scenario and exits with status `0` if all expected outcomes occur, or `1` if any scenario fails. Example output:
+
+```text
+$ python3 attack_demo.py
+[PASS] Normal message from the satellite
+        ground station accepted: ok
+
+[PASS] Attack 1: changed the battery to 100%
+        ground station rejected: bad seal (changed or fake)
+
+[PASS] Attack 2: invented a fake packet
+        ground station rejected: bad seal (changed or fake)
+
+[PASS] Attack 3: re-sent a message right away
+        ground station rejected: duplicate packet (already received)
+
+[PASS] Genuine packet 4 arrives early
+        ground station accepted: ok
+
+[PASS] Genuine packet 2 arrives late
+        ground station accepted: ok
+
+[PASS] Genuine packet 3 arrives late
+        ground station accepted: ok
+
+[PASS] Attack 4: re-sent the oldest message later
+        ground station rejected: duplicate packet (already received)
+
+[PASS] Next normal message afterwards
+        ground station accepted: ok
+
+9 of 9 checks passed.
+```
 
 Run the test suite:
 
@@ -55,6 +106,8 @@ python3 -m unittest -v test_telemetry
 ```
 
 The tests use Python's standard library and do not need the generated shared-key file; they use temporary keys and temporary files.
+
+GitHub Actions runs this same test command on every push and pull request. The workflow is in `.github/workflows/tests.yml`.
 
 ## Configuration
 
