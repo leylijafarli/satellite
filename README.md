@@ -1,7 +1,5 @@
 # Satellite Telemetry Security Simulation
 
-[![Tests](https://github.com/leylijafarli/satellite/actions/workflows/tests.yml/badge.svg)](https://github.com/leylijafarli/satellite/actions/workflows/tests.yml)
-
 A small, dependency-free Python project that simulates a low Earth orbit satellite sending telemetry to a ground station over an unreliable radio link. It demonstrates packet authentication, replay protection, retransmission after packet or acknowledgement loss, and basic link and delivery metrics.
 
 > **Educational simulation:** the orbit, sunlight, power, temperature, and radio-link models are intentionally simplified. This project is not flight software and should not be used to design or operate a real spacecraft or communications system.
@@ -38,7 +36,6 @@ The diagram shows the simulation's integrity and replay checks. The HMAC seal do
 ## Requirements
 
 - Python 3.10 or newer
-- No third-party packages
 
 ## Run it
 
