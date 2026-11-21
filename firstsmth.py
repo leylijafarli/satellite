@@ -1,6 +1,9 @@
+import hashlib
+import hmac
 import json
 import math
 import random
+import secrets
 from datetime import datetime, timedelta, timezone
 
 EARTH_RADIUS_KM = 6371.0
@@ -14,14 +17,20 @@ SHADOW_START = 0.63
 MIN_ELEVATION_DEG = 10.0
 
 
+def make_seal(packet, key):
+    packet_text = json.dumps(packet, sort_keys=True, separators=(",", ":"))
+    return hmac.new(key, packet_text.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 class Satellite:
-    def __init__(self, name, start_time):
+    def __init__(self, name, start_time, key):
         self.name = name
         self.clock = start_time
         self.seconds = 0
         self.battery = 90.0
         self.temperature = 15.0
         self.packet_number = 0
+        self.key = key
         self.saved_packets = []
 
         radius = EARTH_RADIUS_KM + ALTITUDE_KM
@@ -30,7 +39,6 @@ class Satellite:
     def position(self):
         angle = 2 * math.pi * (self.seconds / self.orbit_seconds)
         tilt = math.radians(INCLINATION_DEG)
-
         x = math.cos(angle)
         y = math.sin(angle) * math.cos(tilt)
         z = math.sin(angle) * math.sin(tilt)
@@ -63,7 +71,7 @@ class Satellite:
 
         latitude, longitude = self.position()
         self.packet_number += 1
-        packet = {
+        self.saved_packets.append({
             "satellite": self.name,
             "packet_number": self.packet_number,
             "timestamp": self.clock.isoformat(),
@@ -73,54 +81,85 @@ class Satellite:
             "latitude": round(latitude, 2),
             "longitude": round(longitude, 2),
             "in_sunlight": sunlit,
-        }
-        self.saved_packets.append(packet)
+        })
 
     def send_saved_packets(self):
-        to_send = self.saved_packets
+        messages = []
+        for packet in self.saved_packets:
+            envelope = {
+                "satellite": self.name,
+                "packet": packet,
+                "seal": make_seal(packet, self.key),
+            }
+            messages.append(json.dumps(envelope))
         self.saved_packets = []
-        return to_send
+        return messages
 
 
 class GroundStation:
-    def __init__(self, name, latitude, longitude):
+    def __init__(self, name, latitude, longitude, key):
         self.name = name
         self.latitude = latitude
         self.longitude = longitude
+        self.key = key
         self.received = []
+        self.rejected = []
+        self.last_packet_number = {}
 
     def elevation_of(self, sat_latitude, sat_longitude):
         lat1 = math.radians(self.latitude)
         lon1 = math.radians(self.longitude)
         lat2 = math.radians(sat_latitude)
         lon2 = math.radians(sat_longitude)
-
         cos_gap = (
             math.sin(lat1) * math.sin(lat2)
             + math.cos(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
         )
         cos_gap = max(-1.0, min(1.0, cos_gap))
         sin_gap = math.sqrt(max(0.0, 1 - cos_gap**2))
-
         ratio = EARTH_RADIUS_KM / (EARTH_RADIUS_KM + ALTITUDE_KM)
         return math.degrees(math.atan2(cos_gap - ratio, sin_gap))
 
     def can_hear(self, sat_latitude, sat_longitude):
         return self.elevation_of(sat_latitude, sat_longitude) >= MIN_ELEVATION_DEG
 
+    def _reject(self, reason, raw_message):
+        self.rejected.append({"reason": reason, "message": raw_message})
+        return False, reason
+
     def receive(self, raw_message):
-        packet = json.loads(raw_message)
+        try:
+            message = json.loads(raw_message)
+            packet = message["packet"]
+            seal = message["seal"]
+            satellite = message["satellite"]
+            number = packet["packet_number"]
+            if packet["satellite"] != satellite or not isinstance(number, int):
+                raise ValueError("inconsistent packet fields")
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            return self._reject("badly formed message", raw_message)
+
+        expected_seal = make_seal(packet, self.key)
+        if not hmac.compare_digest(str(seal), expected_seal):
+            return self._reject("bad seal (changed or fake)", raw_message)
+
+        if number <= self.last_packet_number.get(satellite, 0):
+            return self._reject("old packet number (replay)", raw_message)
+
+        self.last_packet_number[satellite] = number
         self.received.append(packet)
-        return packet
+        return True, "ok"
 
 
 def main():
     random.seed(1)
+    # A fresh shared key keeps this simulation runnable without embedding a secret.
+    # A real satellite and station must provision the same protected key securely.
+    key = secrets.token_bytes(32)
     start = datetime.now(timezone.utc).replace(microsecond=0)
 
-    sat = Satellite("SAT-1", start)
-    station = GroundStation("Ground-1", latitude=67.67, longitude=58.87)
-
+    sat = Satellite("SAT-1", start, key)
+    station = GroundStation("Ground-1", latitude=67.67, longitude=58.87, key=key)
     print(f"One orbit takes {sat.orbit_seconds / 60:.1f} minutes.\n")
 
     total_steps = int(HOURS_TO_SIMULATE * 3600 / STEP_SECONDS)
@@ -139,9 +178,10 @@ def main():
                 contact_count += 1
                 delivered_this_contact = 0
                 print(f"--- CONTACT #{contact_count} STARTS at {sat.clock:%H:%M} UTC ---")
-            for packet in sat.send_saved_packets():
-                station.receive(json.dumps(packet))
-                delivered_this_contact += 1
+            for message in sat.send_saved_packets():
+                accepted, _reason = station.receive(message)
+                if accepted:
+                    delivered_this_contact += 1
         elif in_contact:
             in_contact = False
             print(
@@ -160,7 +200,8 @@ def main():
     print(
         f"\nDone. {contact_count} contacts, "
         f"{len(station.received)} packets received, "
-        f"{len(sat.saved_packets)} still waiting."
+        f"{len(sat.saved_packets)} still waiting, "
+        f"{len(station.rejected)} rejected."
     )
 
 
